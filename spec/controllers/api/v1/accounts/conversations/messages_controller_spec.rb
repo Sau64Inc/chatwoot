@@ -421,6 +421,89 @@ RSpec.describe 'Conversation Messages API', type: :request do
             .to have_received(:dispatch)
             .with(anything, kind_of(Time), hash_including(message: message, performed_by: kind_of(User)))
         end
+
+        context 'with remove_attachments parameter' do
+          let!(:message_with_attachment) do
+            msg = create(:message, conversation: conversation, account: account, status: :sent)
+            attachment = msg.attachments.new(account_id: msg.account_id, file_type: :image)
+            attachment.file.attach(
+              io: Rails.root.join('spec/assets/avatar.png').open,
+              filename: 'avatar.png',
+              content_type: 'image/png'
+            )
+            attachment.save!
+            msg
+          end
+
+          it 'removes attachments when flag is true' do
+            expect(message_with_attachment.attachments.count).to eq(1)
+
+            patch api_v1_account_conversation_message_url(
+              account_id: account.id,
+              conversation_id: conversation.display_id,
+              id: message_with_attachment.id
+            ), params: { remove_attachments: true }, headers: agent.create_new_auth_token, as: :json
+
+            expect(response).to have_http_status(:success)
+            expect(message_with_attachment.reload.attachments.count).to eq(0)
+          end
+
+          it 'updates content AND removes attachments' do
+            expect(message_with_attachment.attachments.count).to eq(1)
+
+            patch api_v1_account_conversation_message_url(
+              account_id: account.id,
+              conversation_id: conversation.display_id,
+              id: message_with_attachment.id
+            ), params: { content: 'updated content', remove_attachments: true }, headers: agent.create_new_auth_token, as: :json
+
+            expect(response).to have_http_status(:success)
+            msg = message_with_attachment.reload
+            expect(msg.content).to eq('updated content')
+            expect(msg.attachments.count).to eq(0)
+          end
+
+          it 'does NOT remove attachments when flag is false' do
+            expect(message_with_attachment.attachments.count).to eq(1)
+
+            patch api_v1_account_conversation_message_url(
+              account_id: account.id,
+              conversation_id: conversation.display_id,
+              id: message_with_attachment.id
+            ), params: { remove_attachments: false }, headers: agent.create_new_auth_token, as: :json
+
+            expect(response).to have_http_status(:success)
+            expect(message_with_attachment.reload.attachments.count).to eq(1)
+          end
+
+          it 'does NOT remove attachments when flag is string "false"' do
+            expect(message_with_attachment.attachments.count).to eq(1)
+
+            patch api_v1_account_conversation_message_url(
+              account_id: account.id,
+              conversation_id: conversation.display_id,
+              id: message_with_attachment.id
+            ), params: { remove_attachments: 'false' }, headers: agent.create_new_auth_token, as: :json
+
+            expect(response).to have_http_status(:success)
+            expect(message_with_attachment.reload.attachments.count).to eq(1)
+          end
+
+          it 'ignores parameter when missing' do
+            expect(message_with_attachment.attachments.count).to eq(1)
+
+            patch api_v1_account_conversation_message_url(
+              account_id: account.id,
+              conversation_id: conversation.display_id,
+              id: message_with_attachment.id
+            ), params: { content: 'just updating content' }, headers: agent.create_new_auth_token, as: :json
+
+            expect(response).to have_http_status(:success)
+            msg = message_with_attachment.reload
+            expect(msg.content).to eq('just updating content')
+            expect(msg.attachments.count).to eq(1)
+          end
+        end
       end
     end
   end

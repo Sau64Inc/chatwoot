@@ -138,7 +138,8 @@ class Api::V1::Accounts::Conversations::MessagesController < Api::V1::Accounts::
 
   def remove_message_attachments
     attachments_count = message.attachments.count
-    message.attachments.purge
+    message.attachments.each { |attachment| attachment.file.purge if attachment.file.attached? }
+    message.attachments.destroy_all
     Rails.logger.info "Removed #{attachments_count} attachments from message #{message.id} in conversation #{message.conversation_id} for account #{message.account_id}"
   end
 end
