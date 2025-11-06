@@ -1,0 +1,47 @@
+tags:
+  - Messages
+operationId: update-a-conversation-message
+summary: Update a message
+description: |
+  Update a message in a conversation. You can update the message content, status (for API inboxes only), or remove attachments.
+
+  **Note:** All parameters are optional. The `remove_attachments` parameter defaults to false if not provided, ensuring backward compatibility with existing API clients.
+parameters:
+  - $ref: '#/components/parameters/account_id'
+  - $ref: '#/components/parameters/conversation_id'
+  - $ref: '#/components/parameters/message_id'
+requestBody:
+  required: false
+  content:
+    application/json:
+      schema:
+        $ref: '#/components/schemas/conversation_message_update_payload'
+      examples:
+        update_content:
+          summary: Update message content
+          value:
+            content: "This is the updated message content"
+        remove_attachments:
+          summary: Remove all attachments from a message
+          value:
+            remove_attachments: true
+        update_status:
+          summary: Update message status (API inboxes only)
+          value:
+            status: "sent"
+        combined:
+          summary: Update content and remove attachments
+          value:
+            content: "Updated message without attachments"
+            remove_attachments: true
+responses:
+  '200':
+    description: Success
+    content:
+      application/json:
+        schema:
+          $ref: '#/components/schemas/message'
+  '401':
+    description: Unauthorized
+  '404':
+    description: Message not found

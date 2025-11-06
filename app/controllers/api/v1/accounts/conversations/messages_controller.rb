@@ -16,6 +16,11 @@ class Api::V1::Accounts::Conversations::MessagesController < Api::V1::Accounts::
   def update
     # Track who performed the update so listeners can use it
     with_execution_context do
+      # If status update is requested, ensure it's allowed only for API inboxes
+      if permitted_status_params[:status].present?
+        return unless ensure_api_inbox!
+      end
+
       handle_status_update
       handle_content_update
       @message = message
@@ -110,8 +115,6 @@ class Api::V1::Accounts::Conversations::MessagesController < Api::V1::Accounts::
   def handle_status_update
     status = permitted_status_params[:status]
     return if status.blank?
-
-    return unless ensure_api_inbox!
 
     Messages::StatusUpdateService.new(
       message,
