@@ -136,6 +136,13 @@ class Messages::MessageBuilder
     @automation_rule.present? ? { content_attributes: { automation_rule_id: @automation_rule } } : {}
   end
 
+  def merged_content_attributes
+    attrs = content_attributes.dup
+    attrs[:automation_rule_id] = @automation_rule if @automation_rule.present?
+    return {} if attrs.empty?
+    { content_attributes: attrs }
+  end
+
   def campaign_id
     @params[:campaign_id].present? ? { additional_attributes: { campaign_id: @params[:campaign_id] } } : {}
   end
@@ -163,7 +170,7 @@ class Messages::MessageBuilder
       in_reply_to: @in_reply_to,
       echo_id: @params[:echo_id],
       source_id: @params[:source_id]
-    }.merge(external_created_at).merge(automation_rule_id).merge(campaign_id).merge(template_params)
+    }.merge(external_created_at).merge(merged_content_attributes).merge(campaign_id).merge(template_params)
   end
 
   def email_inbox?
