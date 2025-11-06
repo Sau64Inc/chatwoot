@@ -503,6 +503,45 @@ RSpec.describe 'Conversation Messages API', type: :request do
             expect(msg.content).to eq('just updating content')
             expect(msg.attachments.count).to eq(1)
           end
+
+          it 'actually deletes files from storage when remove_attachments is true' do
+            # Create a message with an actual file attachment
+            msg = create(:message, conversation: conversation, account: account, status: :sent, content: 'original message')
+            attachment = msg.attachments.new(account_id: msg.account_id, file_type: :image)
+            attachment.file.attach(
+              io: Rails.root.join('spec/assets/avatar.png').open,
+              filename: 'avatar.png',
+              content_type: 'image/png'
+            )
+            attachment.save!
+
+            # Verify the file is attached
+            expect(msg.attachments.count).to eq(1)
+            expect(attachment.file.attached?).to be(true)
+
+            # Store the blob key to verify it's purged
+            blob = attachment.file.blob
+            blob_key = blob.key
+
+            # Call the PATCH endpoint with remove_attachments: true
+            patch api_v1_account_conversation_message_url(
+              account_id: account.id,
+              conversation_id: conversation.display_id,
+              id: msg.id
+            ), params: { remove_attachments: true }, headers: agent.create_new_auth_token, as: :json
+
+            # Verify response is successful
+            expect(response).to have_http_status(:success)
+
+            # Verify database records are removed
+            expect(msg.reload.attachments.count).to eq(0)
+
+            # Verify the blob was purged from ActiveStorage
+            expect { blob.reload }.to raise_error(ActiveRecord::RecordNotFound)
+
+            # Verify message content is preserved
+            expect(msg.content).to eq('original message')
+          end
         end
       end
     end
