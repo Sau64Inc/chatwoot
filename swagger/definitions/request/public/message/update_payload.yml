@@ -28,3 +28,7 @@ properties:
             type: integer
             description: The rating of the CSAT survey response
             example: 5
+  remove_attachments:
+    type: boolean
+    description: If true, deletes all attachments from the message. Defaults to false if not provided. All parameters are optional and backward compatible with existing API clients.
+    example: false

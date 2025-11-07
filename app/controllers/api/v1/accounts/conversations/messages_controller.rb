@@ -16,6 +16,11 @@ class Api::V1::Accounts::Conversations::MessagesController < Api::V1::Accounts::
   def update
     # Track who performed the update so listeners can use it
     with_execution_context do
+      # If status update is requested, ensure it's allowed only for API inboxes
+      if permitted_status_params[:status].present?
+        return unless ensure_api_inbox!
+      end
+
       handle_status_update
       handle_content_update
       @message = message
@@ -80,7 +85,7 @@ class Api::V1::Accounts::Conversations::MessagesController < Api::V1::Accounts::
 
   def permitted_content_params
     # Allow updating content and content_attributes
-    params.permit(:content, content_attributes: {})
+    params.permit(:content, :remove_attachments, content_attributes: {})
   end
 
   def already_translated_content_available?
@@ -111,8 +116,6 @@ class Api::V1::Accounts::Conversations::MessagesController < Api::V1::Accounts::
     status = permitted_status_params[:status]
     return if status.blank?
 
-    return unless ensure_api_inbox!
-
     Messages::StatusUpdateService.new(
       message,
       status,
@@ -124,11 +127,22 @@ class Api::V1::Accounts::Conversations::MessagesController < Api::V1::Accounts::
     attrs = permitted_content_params
     return if attrs.blank?
 
+    # remove_attachments parameter is extracted from the attributes hash before persisting to avoid storing it as a message attribute
+    remove_attachments = attrs.delete(:remove_attachments)
+
     if attrs.key?(:content_attributes)
       merged_attrs = (message.content_attributes || {}).deep_merge(attrs[:content_attributes].to_h)
       attrs = attrs.merge(content_attributes: merged_attrs)
     end
 
     message.update!(attrs)
+    remove_message_attachments if remove_attachments.to_s == 'true'
+  end
+
+  def remove_message_attachments
+    attachments_count = message.attachments.count
+    message.attachments.each { |attachment| attachment.file.purge if attachment.file.attached? }
+    message.attachments.destroy_all
+    Rails.logger.info "Removed #{attachments_count} attachments from message #{message.id} in conversation #{message.conversation_id} for account #{message.account_id}"
   end
 end

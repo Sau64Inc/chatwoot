@@ -2,14 +2,35 @@ tags:
   - Messages API
 operationId: update-a-message
 summary: Update a message
-description: Update a message
+description: |
+  Update a message in a conversation. You can update submitted values or remove attachments.
+
+  **Note:** All parameters are optional. The `remove_attachments` parameter defaults to false if not provided, ensuring backward compatibility with existing API clients.
 security: []
 requestBody:
-  required: true
+  required: false
   content:
     application/json:
       schema:
         $ref: '#/components/schemas/public_message_update_payload'
+      examples:
+        remove_attachments:
+          summary: Remove all attachments from a message
+          value:
+            remove_attachments: true
+        submit_csat:
+          summary: Submit CSAT survey response
+          value:
+            submitted_values:
+              csat_survey_response:
+                rating: 5
+                feedback_message: "Great service!"
+        combined:
+          summary: Submit values and remove attachments
+          value:
+            submitted_values:
+              name: "John Doe"
+            remove_attachments: true
 responses:
   '200':
     description: Success

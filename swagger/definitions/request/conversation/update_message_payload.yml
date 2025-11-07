@@ -1,0 +1,21 @@
+type: object
+properties:
+  content:
+    type: string
+    description: The content of the message
+    example: 'Updated message content'
+  content_attributes:
+    type: object
+    description: Additional attributes for the message content. These are merged with existing content_attributes.
+    additionalProperties: true
+    example:
+      items: [{"title": "Option 1", "value": "1"}, {"title": "Option 2", "value": "2"}]
+  status:
+    type: string
+    description: The status of the message (only for API inboxes)
+    enum: [sent, failed, pending]
+    example: 'sent'
+  remove_attachments:
+    type: boolean
+    description: If true, deletes all attachments from the message. Defaults to false if not provided. All parameters are optional and backward compatible with existing API clients.
+    example: false
