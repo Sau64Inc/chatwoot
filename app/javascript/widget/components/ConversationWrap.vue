@@ -4,7 +4,6 @@ import AgentTypingBubble from 'widget/components/AgentTypingBubble.vue';
 import DateSeparator from 'shared/components/DateSeparator.vue';
 import Spinner from 'shared/components/Spinner.vue';
 import { useDarkMode } from 'widget/composables/useDarkMode';
-import { MESSAGE_TYPE } from 'shared/constants/messages';
 import { mapActions, mapGetters } from 'vuex';
 
 export default {
@@ -34,25 +33,16 @@ export default {
   computed: {
     ...mapGetters({
       earliestMessage: 'conversation/getEarliestMessage',
-      lastMessage: 'conversation/getLastMessage',
       allMessagesLoaded: 'conversation/getAllMessagesLoaded',
       isFetchingList: 'conversation/getIsFetchingList',
       conversationSize: 'conversation/getConversationSize',
       isAgentTyping: 'conversation/getIsAgentTyping',
-      conversationAttributes: 'conversationAttributes/getConversationParams',
     }),
     colorSchemeClass() {
       return `${this.darkMode === 'dark' ? 'dark-scheme' : 'light-scheme'}`;
     },
     showStatusIndicator() {
-      const { status } = this.conversationAttributes;
-      const isConversationInPendingStatus = status === 'pending';
-      const isLastMessageIncoming =
-        this.lastMessage.message_type === MESSAGE_TYPE.INCOMING;
-      return (
-        this.isAgentTyping ||
-        (isConversationInPendingStatus && isLastMessageIncoming)
-      );
+      return this.isAgentTyping;
     },
   },
   watch: {
