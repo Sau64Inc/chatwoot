@@ -2,7 +2,9 @@
 
 ## Build / Test / Lint
 
+- **Environment**: `cp .env.example .env` and fill in required values
 - **Setup**: `bundle install && pnpm install`
+- **Database**: `bundle exec rails db:prepare` (creates + migrates + seeds)
 - **Run Dev**: `pnpm dev` or `overmind start -f ./Procfile.dev`
 - **Seed Local Test Data**: `bundle exec rails db:seed` (quickly populates minimal data for standard feature verification)
 - **Seed Search Test Data**: `bundle exec rails search:setup_test_data` (bulk fixture generation for search/performance/manual load scenarios)
@@ -16,12 +18,28 @@
 - **Single Test**: `bundle exec rspec spec/path/to/file_spec.rb:LINE_NUMBER`
 - **Run Project**: `overmind start -f Procfile.dev`
 - **Ruby Version**: Manage Ruby via `rbenv` and install the version listed in `.ruby-version` (e.g., `rbenv install $(cat .ruby-version)`)
+- **Node Version**: Use `nvm` or `fnm` to install the version in `.node-version` (currently 24.x)
 - **rbenv setup**: Before running any `bundle` or `rspec` commands, init rbenv in your shell (`eval "$(rbenv init -)"`) so the correct Ruby/Bundler versions are used
 - Always prefer `bundle exec` for Ruby CLI tasks (rspec, rake, rubocop, etc.)
 
+## Docker (Development)
+
+- **Compose file**: `docker-compose-managernow.yaml` (fork-specific, based on upstream `docker-compose.yaml`)
+- **Upstream sync**: This is a fork of `chatwoot/chatwoot`. After merging upstream:
+  ```bash
+  git fetch upstream && git merge upstream/develop
+  docker compose -f docker-compose-managernow.yaml build base rails  # if Gemfile/Dockerfile changed
+  docker compose -f docker-compose-managernow.yaml up -d
+  docker compose -f docker-compose-managernow.yaml exec rails bundle exec rails db:migrate
+  ```
+- **Restart after code changes**: Source code is mounted via volumes, so a restart is enough:
+  ```bash
+  docker compose -f docker-compose-managernow.yaml restart rails sidekiq vite
+  ```
+
 ## Code Style
 
-- **Ruby**: Follow RuboCop rules (150 character max line length)
+- **Ruby**: Follow RuboCop rules (150 character max line length); use compact `module/class` definitions, avoid nested styles
 - **Vue/JS**: Use ESLint (Airbnb base + Vue 3 recommended)
 - **Vue Components**: Use PascalCase
 - **Events**: Use camelCase
@@ -55,13 +73,6 @@
 - Prefer `with_modified_env` (from spec helpers) over stubbing `ENV` directly in specs
 - Specs in parallel/reloading environments: prefer comparing `error.class.name` over constant class equality when asserting raised errors
 
-## Codex Worktree Workflow
-
-- Use a separate git worktree + branch per task to keep changes isolated.
-- Keep Codex-specific local setup under `.codex/` and use `Procfile.worktree` for worktree process orchestration.
-- The setup workflow in `.codex/environments/environment.toml` should dynamically generate per-worktree DB/port values (Rails, Vite, Redis DB index) to avoid collisions.
-- Start each worktree with its own Overmind socket/title so multiple instances can run at the same time.
-
 ## Commit Messages
 
 - Prefer Conventional Commits: `type(scope): subject` (scope optional)
@@ -85,10 +96,6 @@
   - Backend i18n → `en.yml`, Frontend i18n → `en.json`
 - **Frontend**:
   - Use `components-next/` for message bubbles (the rest is being deprecated)
-
-## Ruby Best Practices
-
-- Use compact `module/class` definitions; avoid nested styles
 
 ## Enterprise Edition Notes
 
