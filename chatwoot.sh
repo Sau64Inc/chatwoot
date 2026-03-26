@@ -605,6 +605,17 @@ function init_database() {
         exit 1
     fi
 
+    # Configuración específica del fork: plan enterprise y branding deshabilitado
+    print_status "Configurando plan enterprise y deshabilitando branding..."
+    echo 'InstallationConfig.find_or_create_by(name: "INSTALLATION_PRICING_PLAN").update!(value: "enterprise"); Account.find_each { |a| a.enable_features!(:disable_branding) }' \
+        | docker compose -f "$DOCKER_COMPOSE_DST" run --rm -T rails bundle exec rails runner - >/dev/null 2>&1
+
+    if [ $? -eq 0 ]; then
+        print_status_ok
+    else
+        print_warning "No se pudo configurar el plan enterprise. Ejecuta manualmente desde la consola."
+    fi
+
 }
 
 function start() {
