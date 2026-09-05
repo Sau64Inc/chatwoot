@@ -105,11 +105,9 @@ class Attachments::CompressStaleAttachmentsJob < ApplicationJob
     ahorro = blob.byte_size - salida.size
     return registrar(:videos, ahorro) if simular?
 
-    adjunto.file.attach(io: File.open(salida.path), content_type: 'image/jpeg',
-                        filename: "#{File.basename(blob.filename.to_s, '.*')}.jpg")
+    adjuntar_marcado(adjunto, salida.path, "#{File.basename(blob.filename.to_s, '.*')}.jpg", 'image/jpeg')
     # Sin esto la UI sigue pintando un reproductor de video.
     adjunto.update!(file_type: :image)
-    marcar(adjunto.reload.file.blob)
     registrar(:videos, ahorro)
   ensure
     salida&.close!
@@ -147,29 +145,70 @@ class Attachments::CompressStaleAttachmentsJob < ApplicationJob
     end
     return registrar(:imagenes, ahorro) if simular?
 
-    adjunto.file.attach(io: File.open(salida.path), filename: blob.filename.to_s,
-                        content_type: blob.content_type)
-    marcar(adjunto.reload.file.blob)
+    adjuntar_marcado(adjunto, salida.path, blob.filename.to_s, blob.content_type)
     registrar(:imagenes, ahorro)
   ensure
     salida&.close!
   end
 
+  # Se llama a `magick` directo y no a ImageProcessing::MiniMagick a proposito.
+  #
+  # ImageProcessing arma el comando como `magick convert ...`, que es la forma
+  # vieja, y ImageMagick 7 escupe un warning por cada archivo:
+  #   "The convert command is deprecated in IMv7, use magick instead"
+  # Sobre 46.000 imagenes son 46.000 lineas de ruido en el log, tapando
+  # cualquier error de verdad. Llamando al binario como corresponde el warning
+  # no existe, y de paso se saca una capa de indireccion: la rama de video ya
+  # invoca ffmpeg de esta misma manera.
+  #
+  # El `>` de "1600x1600>" es de ImageMagick, no del shell: significa "achica
+  # solo si es mas grande". Como se pasa por argumentos y no por una shell, no
+  # hay redireccion que valga.
   def achicar(blob)
     lado = ENV.fetch('ATTACHMENT_IMAGE_MAX_DIMENSION', 1600).to_i
     calidad = ENV.fetch('ATTACHMENT_IMAGE_QUALITY', 75).to_i
-    blob.open do |origen|
-      ImageProcessing::MiniMagick.source(origen.path)
-                                 .resize_to_limit(lado, lado)
-                                 .saver(quality: calidad, strip: true)
-                                 .call
+    destino = Tempfile.new(['comprimida', extension(blob)])
+    ok = blob.open do |origen|
+      system('magick', origen.path, '-auto-orient', '-resize', "#{lado}x#{lado}>",
+             '-strip', '-quality', calidad.to_s, destino.path)
     end
+    return destino if ok && destino.size.positive?
+
+    destino.close!
+    nil
   rescue StandardError => e
     Rails.logger.warn("[compresion] no pude achicar el blob #{blob.id}: #{e.message}")
     nil
   end
 
+  def extension(blob)
+    blob.content_type == 'image/png' ? '.png' : '.jpg'
+  end
+
   # ----------------------------------------------------------------- comun ---
+  # Crea el blob YA MARCADO y recien despues lo adjunta.
+  #
+  # Marcar despues del attach no sirve: Active Storage encola su propio
+  # AnalyzeJob al adjuntar, ese job escribe ancho/alto/analyzed en el metadata
+  # con un read-modify-write, y si cargo la fila antes de que se escribiera la
+  # marca, la pisa. Medido en la primera corrida: de 14.119 blobs nuevos, solo
+  # 403 conservaron la marca. Sin marca, la foto se vuelve a comprimir en la
+  # corrida siguiente, y cada noche pierde un poco mas de calidad.
+  #
+  # Con la marca puesta en el INSERT no hay ventana: cualquier lectura posterior
+  # —la del AnalyzeJob incluida, que carga fresco de la base— ya la ve, y su
+  # merge la conserva.
+  def adjuntar_marcado(adjunto, ruta, nombre, tipo)
+    blob = ActiveStorage::Blob.create_and_upload!(
+      io: File.open(ruta), filename: nombre, content_type: tipo,
+      metadata: { MARCA => Time.current.iso8601 }
+    )
+    adjunto.file.attach(blob)
+    blob
+  end
+
+  # Para el caso en que NO se reemplaza el archivo (la imagen no daba ganancia):
+  # aca no hay attach, no hay AnalyzeJob nuevo y por lo tanto no hay carrera.
   def marcar(blob)
     blob.update!(metadata: blob.metadata.merge(MARCA => Time.current.iso8601))
   end
