@@ -70,6 +70,15 @@ remove_old_notification_job:
   class: 'Notification::RemoveOldNotificationJob'
   queue: purgable
 
+# executed daily at 0300 UTC
+# comprime los adjuntos mas viejos que la ventana configurada: las imagenes se
+# recomprimen y los videos se reemplazan por un frame. Viene apagado: hace falta
+# ATTACHMENT_COMPRESSION_ENABLED=true.
+compress_stale_attachments_job:
+  cron: '0 3 * * *'
+  class: 'Attachments::CompressStaleAttachmentsJob'
+  queue: housekeeping
+
 # executed every 12 hours
 # to remove orphan conversations without contact
 remove_orphan_conversations_job:
