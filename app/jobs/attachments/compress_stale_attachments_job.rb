@@ -39,8 +39,8 @@ class Attachments::CompressStaleAttachmentsJob < ApplicationJob
     procesar(pendientes(IMAGENES), :imagen)
     Rails.logger.info(
       "[compresion] #{simular? ? 'SIMULACION' : 'aplicado'} · #{@stats[:videos]} videos, " \
-      "#{@stats[:imagenes]} imagenes, #{@stats[:saltados]} saltados, #{@stats[:errores]} errores, " \
-      "#{(@stats[:liberado] / 1024.0**3).round(2)} GB liberados"
+      "#{@stats[:imagenes]} imagenes, #{@stats[:saltados]} saltados, " \
+      "#{@stats[:errores]} errores, #{gb(@stats[:liberado])} GB liberados"
     )
   end
 
@@ -99,9 +99,7 @@ class Attachments::CompressStaleAttachmentsJob < ApplicationJob
 
       clase == :video ? convertir_video(adjunto, blob) : recomprimir_imagen(adjunto, blob)
       @stats[:vistos] += 1
-      if (@stats[:vistos] % 200).zero?
-        Rails.logger.info("[compresion] #{@stats[:vistos]} procesados, "                           "#{(@stats[:liberado] / 1024.0**3).round(2)} GB liberados")
-      end
+      avisar_avance
     rescue StandardError => e
       @stats[:errores] += 1
       Rails.logger.error("[compresion] adjunto #{adjunto.id}: #{e.class} #{e.message}")
@@ -226,6 +224,18 @@ class Attachments::CompressStaleAttachmentsJob < ApplicationJob
   # aca no hay attach, no hay AnalyzeJob nuevo y por lo tanto no hay carrera.
   def marcar(blob)
     blob.update!(metadata: blob.metadata.merge(MARCA => Time.current.iso8601))
+  end
+
+  # Una corrida completa son decenas de miles de adjuntos: sin una linea cada
+  # tanto no hay forma de distinguir "avanzando" de "colgado".
+  def avisar_avance
+    return unless (@stats[:vistos] % 200).zero?
+
+    Rails.logger.info("[compresion] #{@stats[:vistos]} procesados, #{gb(@stats[:liberado])} GB liberados")
+  end
+
+  def gb(bytes)
+    (bytes / (1024.0**3)).round(2)
   end
 
   def registrar(clave, ahorro)
