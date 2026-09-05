@@ -424,7 +424,7 @@ RSpec.describe 'Conversation Messages API', type: :request do
             .with(anything, kind_of(Time), hash_including(message: message, performed_by: kind_of(User)))
         end
 
-        context 'with remove_attachments parameter' do
+        context 'with remove_attachments parameter' do # rubocop:disable RSpec/NestedGroups
           let!(:message_with_attachment) do
             msg = create(:message, conversation: conversation, account: account, status: :sent)
             attachment = msg.attachments.new(account_id: msg.account_id, file_type: :image)
@@ -523,7 +523,7 @@ RSpec.describe 'Conversation Messages API', type: :request do
 
             # Store the blob key to verify it's purged
             blob = attachment.file.blob
-            blob_key = blob.key
+            blob.key
 
             # Call the PATCH endpoint with remove_attachments: true
             patch api_v1_account_conversation_message_url(
