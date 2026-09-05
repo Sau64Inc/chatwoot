@@ -1,2 +1,7 @@
-## All enterprise related files should be reviewed by sojan before merging
-/enterprise/* @sojan-official
+# Solo estas dos personas pueden aprobar PRs.
+# Cualquier otra aprobacion no destraba el merge.
+*         @Sau64 @lukasbloom
+
+# El propio CODEOWNERS tambien es de ellos,
+# para que nadie se agregue solo.
+/.github/ @Sau64 @lukasbloom
