@@ -64,15 +64,30 @@ class Attachments::CompressStaleAttachmentsJob < ApplicationJob
 
   # Los adjuntos mas viejos que la ventana, que todavia no pasaron por aca.
   # La marca vive en el metadata del blob para no necesitar una migracion.
+  # Particionado opcional, pensado para el backfill inicial: N procesos, cada uno
+  # con su resto de la division. Como cada uno toca un conjunto disjunto de ids,
+  # no hay coordinacion, ni locks, ni dos procesos peleando por el mismo adjunto.
+  #
+  # Por defecto es 1 particion, o sea exactamente el comportamiento de siempre:
+  # el cron diario no necesita esto y no lo usa.
+  def particionar(scope)
+    partes = ENV.fetch('ATTACHMENT_COMPRESSION_SHARDS', 1).to_i
+    return scope if partes <= 1
+
+    scope.where('MOD(attachments.id, ?) = ?', partes, ENV.fetch('ATTACHMENT_COMPRESSION_SHARD', 0).to_i)
+  end
+
   def pendientes(tipos)
-    Attachment.joins(file_attachment: :blob)
-              .where('attachments.created_at < ?', dias.days.ago)
-              .where(active_storage_blobs: { content_type: tipos })
-              # `metadata` es una columna de TEXTO con JSON adentro, asi la define
-              # Active Storage. Sin el cast a jsonb el operador ->> no existe y
-              # postgres corta con "operator does not exist: text ->> unknown".
-              .where("COALESCE(active_storage_blobs.metadata, '{}')::jsonb ->> ? IS NULL", MARCA)
-              .limit(lote)
+    particionar(
+      Attachment.joins(file_attachment: :blob)
+                .where('attachments.created_at < ?', dias.days.ago)
+                .where(active_storage_blobs: { content_type: tipos })
+                # `metadata` es una columna de TEXTO con JSON adentro, asi la
+                # define Active Storage. Sin el cast a jsonb el operador ->> no
+                # existe y postgres corta con "operator does not exist: text ->>
+                # unknown".
+                .where("COALESCE(active_storage_blobs.metadata, '{}')::jsonb ->> ? IS NULL", MARCA)
+    ).limit(lote)
   end
 
   def procesar(scope, clase)
