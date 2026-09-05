@@ -71,8 +71,8 @@ remove_old_notification_job:
   queue: purgable
 
 # executed daily at 0300 UTC
-# comprime los adjuntos mas viejos que la ventana configurada: las imagenes se
-# recomprimen y los videos se reemplazan por un frame. Viene apagado: hace falta
+# compresses attachments older than the configured window: images are
+# recompressed and videos are replaced by a frame. Ships off: it needs
 # ATTACHMENT_COMPRESSION_ENABLED=true.
 compress_stale_attachments_job:
   cron: '0 3 * * *'

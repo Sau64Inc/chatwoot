@@ -1,245 +1,252 @@
-# Achica los adjuntos viejos en vez de borrarlos.
+# Shrinks old attachments instead of deleting them.
 #
-#   imagenes -> se recomprimen y se limitan a ATTACHMENT_IMAGE_MAX_DIMENSION
-#   videos   -> se reemplazan por un frame, y el adjunto pasa a ser una imagen
+#   images -> recompressed and capped at ATTACHMENT_IMAGE_MAX_DIMENSION
+#   videos -> replaced by a single frame, and the attachment becomes an image
 #
-# El objetivo es el disco: en nuestra instalacion los videos son el 12% de los
-# archivos y el 68% del espacio. Reemplazarlos por un frame convierte 194 GB en
-# unos 4 GB, y recomprimir las imagenes se lleva otra mitad de lo que queda.
+# The target is disk usage: in our installation videos are 12% of the files and
+# 68% of the space. Replacing them with a frame turns 194 GB into about 4 GB,
+# and recompressing the images takes away roughly half of what is left.
 #
-# LO QUE HAY QUE SABER ANTES DE PRENDERLO
+# WHAT TO KNOW BEFORE TURNING IT ON
 #
-#   Es destructivo y no se puede deshacer. El video original se reemplaza; no
-#   queda copia. Por eso viene apagado de fabrica (ATTACHMENT_COMPRESSION_ENABLED)
-#   y tiene un modo de simulacion que informa cuanto liberaria sin tocar nada.
+#   It is destructive and cannot be undone. The original video is replaced and
+#   no copy is kept. That is why it ships off by default (ATTACHMENT_COMPRESSION_ENABLED)
+#   and has a dry-run mode that reports how much it would free without touching anything.
 #
-#   Un adjunto procesado se marca en `blob.metadata` para no volver a pasarle por
-#   arriba todas las noches. La marca va en el blob NUEVO, que es el que queda
-#   attacheado.
+#   A processed attachment is marked in `blob.metadata` so it is not reprocessed
+#   every night. The mark goes on the NEW blob, which is the one that stays attached.
 #
-#   Al reemplazar un video hay que mover `file_type` a :image. Si no, la interfaz
-#   sigue mostrando un reproductor de video con un JPG adentro.
+#   When replacing a video, `file_type` has to move to :image. Otherwise the UI
+#   keeps rendering a video player with a JPG inside it.
 class Attachments::CompressStaleAttachmentsJob < ApplicationJob
   queue_as :housekeeping
 
-  MARCA = 'compressed_at'.freeze
-  # gif queda afuera a proposito: recomprimirlo lo deja en un solo cuadro y se
-  # pierde la animacion. tiff y svg tampoco, son cuatro archivos y no vale el riesgo.
-  # heic/heif quedan afuera: la imagemagick de alpine viene sin el delegado de
-  # HEIC y falla con "no decode delegate". Son 900 MB del total, no justifican
-  # meter libheif en el build.
-  IMAGENES = ['image/jpeg', 'image/png'].freeze
-  VIDEOS = ['video/mp4', 'video/quicktime', 'video/webm', 'video/x-matroska'].freeze
+  MARKER = 'compressed_at'.freeze
+  # gif is left out on purpose: recompressing it collapses it to a single frame
+  # and loses the animation. tiff and svg too, they are a handful of files and
+  # not worth the risk. heic/heif are left out: alpine's imagemagick ships
+  # without the HEIC delegate and fails with "no decode delegate". They are
+  # 900 MB of the total, not enough to justify adding libheif to the build.
+  IMAGE_TYPES = ['image/jpeg', 'image/png'].freeze
+  VIDEO_TYPES = ['video/mp4', 'video/quicktime', 'video/webm', 'video/x-matroska'].freeze
 
   def perform
-    return Rails.logger.info('[compresion] deshabilitada (ATTACHMENT_COMPRESSION_ENABLED)') unless habilitado?
+    return Rails.logger.info('[compression] disabled (ATTACHMENT_COMPRESSION_ENABLED)') unless enabled?
 
     @stats = Hash.new(0)
-    procesar(pendientes(VIDEOS), :video)
-    procesar(pendientes(IMAGENES), :imagen)
+    process_batch(pending(VIDEO_TYPES), :video)
+    process_batch(pending(IMAGE_TYPES), :image)
     Rails.logger.info(
-      "[compresion] #{simular? ? 'SIMULACION' : 'aplicado'} · #{@stats[:videos]} videos, " \
-      "#{@stats[:imagenes]} imagenes, #{@stats[:saltados]} saltados, " \
-      "#{@stats[:errores]} errores, #{gb(@stats[:liberado])} GB liberados"
+      "[compression] #{dry_run? ? 'DRY RUN' : 'applied'} · #{@stats[:videos]} videos, " \
+      "#{@stats[:images]} images, #{@stats[:skipped]} skipped, " \
+      "#{@stats[:errors]} errors, #{gb(@stats[:freed])} GB freed"
     )
   end
 
   private
 
-  def habilitado?
+  def enabled?
     ActiveModel::Type::Boolean.new.cast(ENV.fetch('ATTACHMENT_COMPRESSION_ENABLED', false))
   end
 
-  def simular?
+  def dry_run?
     ActiveModel::Type::Boolean.new.cast(ENV.fetch('ATTACHMENT_COMPRESSION_DRY_RUN', false))
   end
 
-  def dias
+  def stale_after_days
     ENV.fetch('ATTACHMENT_COMPRESSION_AFTER_DAYS', 30).to_i
   end
 
-  def lote
+  # Cap per type per run, so a single night does not run forever.
+  def batch_limit
     ENV.fetch('ATTACHMENT_COMPRESSION_BATCH', 2000).to_i
   end
 
-  # Los adjuntos mas viejos que la ventana, que todavia no pasaron por aca.
-  # La marca vive en el metadata del blob para no necesitar una migracion.
-  # Particionado opcional, pensado para el backfill inicial: N procesos, cada uno
-  # con su resto de la division. Como cada uno toca un conjunto disjunto de ids,
-  # no hay coordinacion, ni locks, ni dos procesos peleando por el mismo adjunto.
+  def max_dimension
+    ENV.fetch('ATTACHMENT_IMAGE_MAX_DIMENSION', 1600).to_i
+  end
+
+  # Attachments older than the window that have not been processed yet.
+  # The marker lives in the blob metadata so no migration is needed.
+  # Optional sharding, meant for the initial backfill: N processes, each with its
+  # own remainder of the division. Since each one touches a disjoint set of ids,
+  # there is no coordination, no locks, and no two processes fighting over the
+  # same attachment.
   #
-  # Por defecto es 1 particion, o sea exactamente el comportamiento de siempre:
-  # el cron diario no necesita esto y no lo usa.
-  def particionar(scope)
-    partes = ENV.fetch('ATTACHMENT_COMPRESSION_SHARDS', 1).to_i
-    return scope if partes <= 1
+  # Defaults to 1 shard, i.e. exactly the usual behavior: the daily cron does not
+  # need this and does not use it.
+  def apply_shard(scope)
+    shards = ENV.fetch('ATTACHMENT_COMPRESSION_SHARDS', 1).to_i
+    return scope if shards <= 1
 
-    scope.where('MOD(attachments.id, ?) = ?', partes, ENV.fetch('ATTACHMENT_COMPRESSION_SHARD', 0).to_i)
+    scope.where('MOD(attachments.id, ?) = ?', shards, ENV.fetch('ATTACHMENT_COMPRESSION_SHARD', 0).to_i)
   end
 
-  def pendientes(tipos)
-    particionar(
+  def pending(types)
+    apply_shard(
       Attachment.joins(file_attachment: :blob)
-                .where('attachments.created_at < ?', dias.days.ago)
-                .where(active_storage_blobs: { content_type: tipos })
-                # `metadata` es una columna de TEXTO con JSON adentro, asi la
-                # define Active Storage. Sin el cast a jsonb el operador ->> no
-                # existe y postgres corta con "operator does not exist: text ->>
-                # unknown".
-                .where("COALESCE(active_storage_blobs.metadata, '{}')::jsonb ->> ? IS NULL", MARCA)
-    ).limit(lote)
+                .where('attachments.created_at < ?', stale_after_days.days.ago)
+                .where(active_storage_blobs: { content_type: types })
+                # `metadata` is a TEXT column with JSON inside, that is how Active
+                # Storage defines it. Without the jsonb cast the ->> operator does
+                # not exist and postgres bails with "operator does not exist:
+                # text ->> unknown".
+                .where("COALESCE(active_storage_blobs.metadata, '{}')::jsonb ->> ? IS NULL", MARKER)
+    ).limit(batch_limit)
   end
 
-  def procesar(scope, clase)
-    scope.find_each(batch_size: 100) do |adjunto|
-      blob = adjunto.file.blob
-      # Si el archivo no esta, no hay nada que comprimir. Lo de arreglar las
-      # filas sin archivo es otro problema y no es el de este job.
-      next @stats[:saltados] += 1 unless archivo_presente?(blob)
+  def process_batch(scope, kind)
+    scope.find_each(batch_size: 100) do |attachment|
+      blob = attachment.file.blob
+      # If the file is gone there is nothing to compress. Cleaning up rows
+      # without a file is a different problem, not this job's.
+      next @stats[:skipped] += 1 unless file_present?(blob)
 
-      clase == :video ? convertir_video(adjunto, blob) : recomprimir_imagen(adjunto, blob)
-      @stats[:vistos] += 1
-      avisar_avance
+      kind == :video ? convert_video(attachment, blob) : recompress_image(attachment, blob)
+      @stats[:seen] += 1
+      log_progress
     rescue StandardError => e
-      @stats[:errores] += 1
-      Rails.logger.error("[compresion] adjunto #{adjunto.id}: #{e.class} #{e.message}")
+      @stats[:errors] += 1
+      Rails.logger.error("[compression] attachment #{attachment.id}: #{e.class} #{e.message}")
     end
   end
 
-  def archivo_presente?(blob)
+  def file_present?(blob)
     blob.service.exist?(blob.key)
   end
 
   # ------------------------------------------------------------------ video --
-  def convertir_video(adjunto, blob)
-    salida = extraer_frame(blob)
-    return @stats[:saltados] += 1 if salida.nil?
+  def convert_video(attachment, blob)
+    output = extract_frame(blob)
+    return @stats[:skipped] += 1 if output.nil?
 
-    ahorro = blob.byte_size - salida.size
-    return registrar(:videos, ahorro) if simular?
+    saved = blob.byte_size - output.size
+    return record(:videos, saved) if dry_run?
 
-    adjuntar_marcado(adjunto, salida.path, "#{File.basename(blob.filename.to_s, '.*')}.jpg", 'image/jpeg')
-    # Sin esto la UI sigue pintando un reproductor de video.
-    adjunto.update!(file_type: :image)
-    registrar(:videos, ahorro)
+    attach_marked(attachment, output, "#{File.basename(blob.filename.to_s, '.*')}.jpg", 'image/jpeg')
+    # Without this the UI keeps rendering a video player.
+    attachment.update!(file_type: :image)
+    record(:videos, saved)
   ensure
-    salida&.close!
+    output&.close!
   end
 
-  # ffmpeg no viene en la imagen base de chatwoot: se agrega en docker/Dockerfile.
+  # ffmpeg is not in chatwoot's base image: it is added in docker/Dockerfile.
   #
-  # El instante del frame es configurable porque el segundo cero de un video
-  # filmado con celular suele ser negro, y un thumbnail negro no sirve de nada.
-  def extraer_frame(blob)
-    destino = Tempfile.new(['frame', '.jpg'])
-    blob.open do |origen|
-      # El mismo tope que las imagenes: force_original_aspect_ratio=decrease
-      # entra en la caja sin deformar, y el min() con iw/ih evita agrandar un
-      # video que ya era chico.
-      lado = ENV.fetch('ATTACHMENT_IMAGE_MAX_DIMENSION', 1600).to_i
-      escala = "scale='min(#{lado},iw)':'min(#{lado},ih)':force_original_aspect_ratio=decrease"
+  # The frame instant is configurable because second zero of a video shot on a
+  # phone is usually black, and a black thumbnail is useless.
+  def extract_frame(blob)
+    dest = Tempfile.new(['frame', '.jpg'])
+    blob.open do |source|
+      # Same cap as images: force_original_aspect_ratio=decrease fits inside the
+      # box without distortion, and min() against iw/ih avoids upscaling a video
+      # that was already small.
+      scale = "scale='min(#{max_dimension},iw)':'min(#{max_dimension},ih)':force_original_aspect_ratio=decrease"
       system('ffmpeg', '-loglevel', 'error', '-y', '-ss', ENV.fetch('ATTACHMENT_VIDEO_FRAME_AT', '00:00:01'),
-             '-i', origen.path, '-frames:v', '1', '-vf', escala, '-q:v', '3', '-f', 'image2', destino.path)
+             '-i', source.path, '-frames:v', '1', '-vf', scale, '-q:v', '3', '-f', 'image2', dest.path)
     end
-    destino.size.positive? ? destino : (destino.close! && nil)
+    dest.size.positive? ? dest : (dest.close! && nil)
   end
 
-  # --------------------------------------------------------------- imagenes --
-  def recomprimir_imagen(adjunto, blob)
-    salida = achicar(blob)
-    return @stats[:saltados] += 1 if salida.nil?
+  # --------------------------------------------------------------- images --
+  def recompress_image(attachment, blob)
+    output = shrink(blob)
+    return @stats[:skipped] += 1 if output.nil?
 
-    ahorro = blob.byte_size - File.size(salida.path)
-    # Si no se gana al menos un 10%, no vale la pena reescribir el blob ni
-    # perder calidad. Se marca igual para no volver a intentarlo cada noche.
-    if ahorro < blob.byte_size * 0.1
-      marcar(blob) unless simular?
-      return @stats[:saltados] += 1
+    saved = blob.byte_size - output.size
+    # If it does not save at least 10% it is not worth rewriting the blob nor
+    # losing quality. Mark it anyway so it is not retried every night.
+    if saved < blob.byte_size * 0.1
+      mark(blob) unless dry_run?
+      return @stats[:skipped] += 1
     end
-    return registrar(:imagenes, ahorro) if simular?
+    return record(:images, saved) if dry_run?
 
-    adjuntar_marcado(adjunto, salida.path, blob.filename.to_s, blob.content_type)
-    registrar(:imagenes, ahorro)
+    attach_marked(attachment, output, blob.filename.to_s, blob.content_type)
+    record(:images, saved)
   ensure
-    salida&.close!
+    output&.close!
   end
 
-  # Se llama a `magick` directo y no a ImageProcessing::MiniMagick a proposito.
+  # `magick` is called directly rather than through ImageProcessing::MiniMagick
+  # on purpose.
   #
-  # ImageProcessing arma el comando como `magick convert ...`, que es la forma
-  # vieja, y ImageMagick 7 escupe un warning por cada archivo:
+  # ImageProcessing builds the command as `magick convert ...`, the old form, and
+  # ImageMagick 7 prints a warning per file:
   #   "The convert command is deprecated in IMv7, use magick instead"
-  # Sobre 46.000 imagenes son 46.000 lineas de ruido en el log, tapando
-  # cualquier error de verdad. Llamando al binario como corresponde el warning
-  # no existe, y de paso se saca una capa de indireccion: la rama de video ya
-  # invoca ffmpeg de esta misma manera.
+  # Over 46,000 images that is 46,000 lines of noise in the log, burying any real
+  # error. Calling the binary the right way the warning is gone, and it drops a
+  # layer of indirection: the video branch already invokes ffmpeg the same way.
   #
-  # El `>` de "1600x1600>" es de ImageMagick, no del shell: significa "achica
-  # solo si es mas grande". Como se pasa por argumentos y no por una shell, no
-  # hay redireccion que valga.
-  def achicar(blob)
-    lado = ENV.fetch('ATTACHMENT_IMAGE_MAX_DIMENSION', 1600).to_i
-    calidad = ENV.fetch('ATTACHMENT_IMAGE_QUALITY', 75).to_i
-    destino = Tempfile.new(['comprimida', extension(blob)])
-    ok = blob.open do |origen|
-      system('magick', origen.path, '-auto-orient', '-resize', "#{lado}x#{lado}>",
-             '-strip', '-quality', calidad.to_s, destino.path)
+  # The `>` in "1600x1600>" is ImageMagick's, not the shell's: it means "shrink
+  # only if larger". Since it is passed as an argument and not through a shell,
+  # there is no redirection at play.
+  def shrink(blob)
+    quality = ENV.fetch('ATTACHMENT_IMAGE_QUALITY', 75).to_i
+    dest = Tempfile.new(['compressed', extension_for(blob)])
+    ok = blob.open do |source|
+      system('magick', source.path, '-auto-orient', '-resize', "#{max_dimension}x#{max_dimension}>",
+             '-strip', '-quality', quality.to_s, dest.path)
     end
-    return destino if ok && destino.size.positive?
+    return dest if ok && dest.size.positive?
 
-    destino.close!
+    dest.close!
     nil
   rescue StandardError => e
-    Rails.logger.warn("[compresion] no pude achicar el blob #{blob.id}: #{e.message}")
+    Rails.logger.warn("[compression] could not shrink blob #{blob.id}: #{e.message}")
     nil
   end
 
-  def extension(blob)
+  def extension_for(blob)
     blob.content_type == 'image/png' ? '.png' : '.jpg'
   end
 
-  # ----------------------------------------------------------------- comun ---
-  # Crea el blob YA MARCADO y recien despues lo adjunta.
+  # ----------------------------------------------------------------- shared --
+  # Creates the blob ALREADY MARKED and only then attaches it.
   #
-  # Marcar despues del attach no sirve: Active Storage encola su propio
-  # AnalyzeJob al adjuntar, ese job escribe ancho/alto/analyzed en el metadata
-  # con un read-modify-write, y si cargo la fila antes de que se escribiera la
-  # marca, la pisa. Medido en la primera corrida: de 14.119 blobs nuevos, solo
-  # 403 conservaron la marca. Sin marca, la foto se vuelve a comprimir en la
-  # corrida siguiente, y cada noche pierde un poco mas de calidad.
+  # Marking after the attach does not work: Active Storage enqueues its own
+  # AnalyzeJob on attach, that job writes width/height/analyzed into the metadata
+  # with a read-modify-write, and if it loads the row before the mark was written
+  # it overwrites it. Measured on the first run: out of 14,119 new blobs, only 403
+  # kept the mark. Without the mark the image is recompressed on the next run, and
+  # every night it loses a bit more quality.
   #
-  # Con la marca puesta en el INSERT no hay ventana: cualquier lectura posterior
-  # —la del AnalyzeJob incluida, que carga fresco de la base— ya la ve, y su
-  # merge la conserva.
-  def adjuntar_marcado(adjunto, ruta, nombre, tipo)
+  # With the mark set on the INSERT there is no window: any later read (the
+  # AnalyzeJob's included, which loads fresh from the database) already sees it,
+  # and its merge preserves it.
+  #
+  # The io is rewound and reused instead of reopening the path, so no extra file
+  # descriptor leaks across a run of tens of thousands of attachments.
+  def attach_marked(attachment, io, filename, content_type)
+    io.rewind
     blob = ActiveStorage::Blob.create_and_upload!(
-      io: File.open(ruta), filename: nombre, content_type: tipo,
-      metadata: { MARCA => Time.current.iso8601 }
+      io: io, filename: filename, content_type: content_type,
+      metadata: { MARKER => Time.current.iso8601 }
     )
-    adjunto.file.attach(blob)
+    attachment.file.attach(blob)
     blob
   end
 
-  # Para el caso en que NO se reemplaza el archivo (la imagen no daba ganancia):
-  # aca no hay attach, no hay AnalyzeJob nuevo y por lo tanto no hay carrera.
-  def marcar(blob)
-    blob.update!(metadata: blob.metadata.merge(MARCA => Time.current.iso8601))
+  # For the case where the file is NOT replaced (the image had no gain): there is
+  # no attach here, no new AnalyzeJob and therefore no race.
+  def mark(blob)
+    blob.update!(metadata: blob.metadata.merge(MARKER => Time.current.iso8601))
   end
 
-  # Una corrida completa son decenas de miles de adjuntos: sin una linea cada
-  # tanto no hay forma de distinguir "avanzando" de "colgado".
-  def avisar_avance
-    return unless (@stats[:vistos] % 200).zero?
+  # A full run is tens of thousands of attachments: without a line every so often
+  # there is no way to tell "making progress" from "hung".
+  def log_progress
+    return unless (@stats[:seen] % 200).zero?
 
-    Rails.logger.info("[compresion] #{@stats[:vistos]} procesados, #{gb(@stats[:liberado])} GB liberados")
+    Rails.logger.info("[compression] #{@stats[:seen]} processed, #{gb(@stats[:freed])} GB freed")
   end
 
   def gb(bytes)
     (bytes / (1024.0**3)).round(2)
   end
 
-  def registrar(clave, ahorro)
-    @stats[clave] += 1
-    @stats[:liberado] += [ahorro, 0].max
+  def record(key, saved)
+    @stats[key] += 1
+    @stats[:freed] += [saved, 0].max
   end
 end
