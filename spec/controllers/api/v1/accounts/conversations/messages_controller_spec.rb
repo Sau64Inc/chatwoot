@@ -521,9 +521,7 @@ RSpec.describe 'Conversation Messages API', type: :request do
             expect(msg.attachments.count).to eq(1)
             expect(attachment.file.attached?).to be(true)
 
-            # Store the blob key to verify it's purged
             blob = attachment.file.blob
-            blob.key
 
             # Call the PATCH endpoint with remove_attachments: true
             patch api_v1_account_conversation_message_url(
