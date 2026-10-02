@@ -17,9 +17,7 @@ class Api::V1::Accounts::Conversations::MessagesController < Api::V1::Accounts::
     # Track who performed the update so listeners can use it
     with_execution_context do
       # If status update is requested, ensure it's allowed only for API inboxes
-      if permitted_status_params[:status].present?
-        return unless ensure_api_inbox!
-      end
+      return if permitted_status_params[:status].present? && !ensure_api_inbox!
 
       handle_status_update
       handle_content_update
@@ -143,6 +141,7 @@ class Api::V1::Accounts::Conversations::MessagesController < Api::V1::Accounts::
     attachments_count = message.attachments.count
     message.attachments.each { |attachment| attachment.file.purge if attachment.file.attached? }
     message.attachments.destroy_all
-    Rails.logger.info "Removed #{attachments_count} attachments from message #{message.id} in conversation #{message.conversation_id} for account #{message.account_id}"
+    Rails.logger.info "Removed #{attachments_count} attachments from message #{message.id} " \
+                      "in conversation #{message.conversation_id} for account #{message.account_id}"
   end
 end

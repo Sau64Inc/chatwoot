@@ -105,6 +105,9 @@ jobs:
           rm -rf enterprise
           rm -rf spec/enterprise
 
+      - name: Install media tools for attachment compression specs
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg libvips42t64
+
       - name: Create database
         run: bundle exec rake db:create
 

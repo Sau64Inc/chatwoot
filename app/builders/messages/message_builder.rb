@@ -119,6 +119,7 @@ class Messages::MessageBuilder
     attrs = content_attributes.dup
     attrs[:automation_rule_id] = @automation_rule if @automation_rule.present?
     return {} if attrs.empty?
+
     { content_attributes: attrs }
   end
 
