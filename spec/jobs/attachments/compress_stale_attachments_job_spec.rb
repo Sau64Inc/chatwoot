@@ -8,9 +8,10 @@ RSpec.describe Attachments::CompressStaleAttachmentsJob do
     with_modified_env(ATTACHMENT_COMPRESSION_ENABLED: 'true', ATTACHMENT_IMAGE_MAX_DIMENSION: '100') { example.run }
   end
 
-  def stale_attachment(filename, content_type, file_type, created_at: 40.days.ago)
+  def stale_attachment(filename, content_type, file_type, created_at: 40.days.ago, io: nil)
     attachment = message.attachments.new(account_id: message.account_id, file_type: file_type, created_at: created_at)
-    attachment.file.attach(io: Rails.root.join("spec/assets/#{filename}").open, filename: filename, content_type: content_type)
+    io ||= Rails.root.join("spec/assets/#{filename}").open
+    attachment.file.attach(io: io, filename: filename, content_type: content_type)
     attachment.save!
     attachment
   end
@@ -99,6 +100,35 @@ RSpec.describe Attachments::CompressStaleAttachmentsJob do
     expect(attachment.reload.file.blob.id).to eq(blob_id)
     expect(attachment.meta).not_to have_key(marker)
     expect(Rails.logger).to have_received(:error).with(/attachment \d+: Errno::ENOENT/)
+  end
+
+  it 'marks an empty file without trying to compress it' do
+    attachment = stale_attachment('empty.jpg', 'image/jpeg', :image, io: StringIO.new)
+    blob_id = attachment.file.blob.id
+    allow(Rails.logger).to receive(:error)
+
+    described_class.perform_now
+
+    expect(attachment.reload.file.blob.id).to eq(blob_id)
+    expect(attachment.meta[marker]).to be_present
+    expect(Rails.logger).not_to have_received(:error)
+  end
+
+  it 'marks a broken file once it has failed MAX_ATTEMPTS runs' do
+    attachment = stale_attachment('broken.jpg', 'image/jpeg', :image, io: StringIO.new('not an image'))
+    allow(Rails.logger).to receive(:error)
+
+    described_class.perform_now(dry_run: true)
+    expect(attachment.reload.meta).not_to have_key(described_class::ATTEMPTS)
+
+    (described_class::MAX_ATTEMPTS - 1).times { described_class.perform_now }
+    expect(attachment.reload.meta).not_to have_key(marker)
+    expect(attachment.meta[described_class::ATTEMPTS]).to eq(described_class::MAX_ATTEMPTS - 1)
+
+    described_class.perform_now
+
+    expect(attachment.reload.meta[marker]).to be_present
+    expect(attachment.meta[described_class::LAST_ERROR]).to start_with('Vips::Error')
   end
 
   it 'only processes the ids of its shard' do

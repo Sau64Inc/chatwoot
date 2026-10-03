@@ -6,6 +6,11 @@ class Attachments::CompressStaleAttachmentsJob < ApplicationJob
   queue_as :housekeeping
 
   MARKER = 'compression_checked_at'.freeze
+  ATTEMPTS = 'compression_attempts'.freeze
+  LAST_ERROR = 'compression_error'.freeze
+  # A file that fails this many runs is broken (truncated upload, a HEIC sent as video/quicktime),
+  # so it gets marked and stops coming back every night.
+  MAX_ATTEMPTS = 3
   MIN_GAIN = 0.1
   IMAGE_TYPES = %w[image/jpeg image/png].freeze
   VIDEO_TYPES = %w[video/mp4 video/quicktime video/webm video/x-matroska].freeze
@@ -42,7 +47,8 @@ class Attachments::CompressStaleAttachmentsJob < ApplicationJob
 
   def compress(attachment)
     blob = attachment.file.blob
-    return skip(attachment) unless blob.service.exist?(blob.key)
+    # An empty file (failed upload) has nothing to shrink and never will.
+    return skip(attachment) unless blob.byte_size.positive? && blob.service.exist?(blob.key)
 
     output = compressed_file(blob)
     saved = blob.byte_size - output.size
@@ -53,6 +59,7 @@ class Attachments::CompressStaleAttachmentsJob < ApplicationJob
   rescue StandardError => e
     @stats[:errors] += 1
     Rails.logger.error("[compression] attachment #{attachment.id}: #{e.class} #{e.message}")
+    record_failure(attachment, e) unless @dry_run
   ensure
     output&.close!
     log_progress
@@ -90,7 +97,18 @@ class Attachments::CompressStaleAttachmentsJob < ApplicationJob
     attachment.update!(meta: marked_meta(attachment)) unless @dry_run
   end
 
-  def marked_meta(attachment) = attachment.meta.merge(MARKER => Time.current.iso8601)
+  # Counted rather than marked on the first error: a missing binary or a full disk fails every
+  # file for a night and must not shelve them all. Reloaded first because a failed replace
+  # leaves unsaved changes on the record that update! would otherwise persist.
+  def record_failure(attachment, error)
+    attachment.reload
+    attempts = attachment.meta.fetch(ATTEMPTS, 0) + 1
+    meta = attachment.meta.merge(ATTEMPTS => attempts, LAST_ERROR => "#{error.class}: #{error.message.lines.last&.strip}".truncate(200))
+    meta[MARKER] = Time.current.iso8601 if attempts >= MAX_ATTEMPTS
+    attachment.update!(meta: meta)
+  end
+
+  def marked_meta(attachment) = attachment.meta.except(ATTEMPTS, LAST_ERROR).merge(MARKER => Time.current.iso8601)
 
   def record(kind, saved)
     @stats[kind] += 1
