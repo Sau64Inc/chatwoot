@@ -47,8 +47,7 @@ class Attachments::CompressStaleAttachmentsJob < ApplicationJob
 
   def compress(attachment)
     blob = attachment.file.blob
-    # An empty file (failed upload) has nothing to shrink and never will.
-    return skip(attachment) unless blob.byte_size.positive? && blob.service.exist?(blob.key)
+    return skip(attachment) unless compressible?(blob)
 
     output = compressed_file(blob)
     saved = blob.byte_size - output.size
@@ -57,13 +56,14 @@ class Attachments::CompressStaleAttachmentsJob < ApplicationJob
     replace(attachment, blob, output) unless @dry_run
     record(blob.video? ? :videos : :images, saved)
   rescue StandardError => e
-    @stats[:errors] += 1
-    Rails.logger.error("[compression] attachment #{attachment.id}: #{e.class} #{e.message}")
-    record_failure(attachment, e) unless @dry_run
+    record_failure(attachment, e)
   ensure
     output&.close!
     log_progress
   end
+
+  # An empty file (failed upload) has nothing to shrink and never will.
+  def compressible?(blob) = blob.byte_size.positive? && blob.service.exist?(blob.key)
 
   def replace(attachment, blob, output)
     content_type = blob.video? ? 'image/jpeg' : blob.content_type
@@ -101,6 +101,10 @@ class Attachments::CompressStaleAttachmentsJob < ApplicationJob
   # file for a night and must not shelve them all. Reloaded first because a failed replace
   # leaves unsaved changes on the record that update! would otherwise persist.
   def record_failure(attachment, error)
+    @stats[:errors] += 1
+    Rails.logger.error("[compression] attachment #{attachment.id}: #{error.class} #{error.message}")
+    return if @dry_run
+
     attachment.reload
     attempts = attachment.meta.fetch(ATTEMPTS, 0) + 1
     meta = attachment.meta.merge(ATTEMPTS => attempts, LAST_ERROR => "#{error.class}: #{error.message.lines.last&.strip}".truncate(200))
